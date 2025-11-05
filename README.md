@@ -107,6 +107,11 @@ export OPENAI_API_BASE="https://api.openai.com/v1"
 export OPENAI_MODEL="gpt-4"
 # 或使用推理模型以查看思考过程：
 export OPENAI_MODEL="o1-preview"
+
+# 选择 API 类型（显式开关，无自动检测/回退）
+# true  使用 Responses API（支持 reasoning summary）
+# false 使用 Chat Completions API（更通用）
+export OPENAI_USE_RESPONSES_API=true
 ```
 
 ### 配置示例

@@ -103,10 +103,14 @@ struct ChatApp {
     _input_subscription: Subscription,
     focus_handle: FocusHandle,
     use_real_api: bool,
+    // 开关：是否使用 Responses API（仅由用户控制）
+    use_responses_api: bool,
     is_loading: bool,
     streaming_content: String,
     pending_response: Option<PendingResponse>,
     pending_clear_input: bool,
+    // 帧泵：在流式期间按帧触发刷新，保证实时渲染
+    streaming_pump_running: bool,
     // 调试信息
     debug_info: String,
     last_error: Option<String>,
@@ -190,7 +194,7 @@ impl ChatApp {
             }
         });
 
-        Self {
+        let mut app = Self {
             current_conversation,
             conversations,
             storage,
@@ -199,10 +203,12 @@ impl ChatApp {
             _input_subscription,
             focus_handle: cx.focus_handle(),
             use_real_api,
+            use_responses_api: false,
             is_loading: false,
             streaming_content: String::new(),
             pending_response: None,
             pending_clear_input: false,
+            streaming_pump_running: false,
             debug_info,
             last_error: None,
             error_log: None,
@@ -214,7 +220,11 @@ impl ChatApp {
             reasoning_duration: None,
             show_reasoning_expanded: false,
             expanded_reasoning_messages: std::collections::HashSet::new(),
-        }
+        };
+
+        // 读取服务初始配置（来自环境变量）
+        app.use_responses_api = app.openai.use_responses_api();
+        app
     }
 
     fn create_demo_conversation() -> Conversation {
@@ -354,40 +364,70 @@ impl ChatApp {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
                 if use_real_api {
-                    // Use real OpenAI API with streaming
-                    println!("📡 调用真实 OpenAI API（流式模式）...");
+                    // Use OpenAI Responses API (supports reasoning summary!)
+                    println!("📡 调用 OpenAI Responses API（支持 reasoning summary）...");
 
                     let first_chunk = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
                     let first_chunk_clone = first_chunk.clone();
+                    let first_reasoning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                    let first_reasoning_clone = first_reasoning.clone();
+
                     let reasoning_started_clone2 = reasoning_started_clone.clone();
                     let reasoning_start_instant_clone2 = reasoning_start_instant_clone.clone();
+                    // 供推理摘要回调使用的克隆（当先到达推理摘要时也要触发UI进入思考阶段）
+                    let reasoning_started_clone3 = reasoning_started_clone.clone();
+                    let reasoning_start_instant_clone3 = reasoning_start_instant_clone.clone();
                     let streaming_content_arc_clone2 = streaming_content_arc_clone.clone();
+                    let reasoning_summary_arc_clone2 = reasoning_summary_arc_clone.clone();
 
-                    match openai.get_streaming_completion(&messages, move |chunk| {
-                        // 🧠 收到第一个chunk时才标记推理开始
-                        if first_chunk_clone.load(std::sync::atomic::Ordering::SeqCst) {
-                            reasoning_started_clone2.store(true, std::sync::atomic::Ordering::SeqCst);
-                            *reasoning_start_instant_clone2.lock().unwrap() = Some(std::time::Instant::now());
-                            println!("🧠 推理阶段开始！（收到第一个响应chunk）");
-                            first_chunk_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                    // 使用 Responses API，支持 reasoning summary
+                    match openai.get_streaming_completion_native(
+                        &messages,
+                        // 回调1: 处理普通内容
+                        move |chunk| {
+                            // 收到第一个内容chunk时标记推理开始
+                            if first_chunk_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                                reasoning_started_clone2.store(true, std::sync::atomic::Ordering::SeqCst);
+                                *reasoning_start_instant_clone2.lock().unwrap() = Some(std::time::Instant::now());
+                                println!("🚀 响应开始！（收到第一个内容chunk）");
+                                first_chunk_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+
+                            // 实时累积流式内容
+                            let mut content = streaming_content_arc_clone2.lock().unwrap();
+                            content.push_str(&chunk);
+                            println!("📦 内容chunk: {} 字符，累积: {}", chunk.len(), content.len());
+                        },
+                        // 回调2: 处理推理摘要（reasoning_summary_text）
+                        move |reasoning_chunk| {
+                            // 若先收到推理摘要，也标记思考阶段开始
+                            if first_reasoning_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                                reasoning_started_clone3.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let mut guard = reasoning_start_instant_clone3.lock().unwrap();
+                                if guard.is_none() { *guard = Some(std::time::Instant::now()); }
+                            }
+                            if first_reasoning_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                                println!("🧠 检测到推理摘要！开始流式显示推理过程");
+                                first_reasoning_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+
+                            // 实时累积推理摘要
+                            let mut summary = reasoning_summary_arc_clone2.lock().unwrap();
+                            summary.push_str(&reasoning_chunk);
+                            println!("🧠 推理摘要chunk: {} 字符，累积: {}", reasoning_chunk.len(), summary.len());
                         }
-
-                        // 📝 实时累积流式内容
-                        let mut content = streaming_content_arc_clone2.lock().unwrap();
-                        content.push_str(&chunk);
-                        println!("📦 收到chunk: {} 字符，累积长度: {}", chunk.len(), content.len());
-                    }).await {
+                    ).await {
                         Ok((content, reasoning_summary_opt)) => {
-                            println!("✅ 流式API调用成功，总响应长度: {} 字符", content.len());
+                            println!("✅ Responses API 调用成功！");
+                            println!("   - 输出长度: {} 字符", content.len());
 
-                            // ⚠️ 只使用API实际返回的推理摘要，不生成假数据
-                            // 如果API返回了reasoning summary（如o1模型），则保存并显示
-                            // 如果没有返回（如gpt-4等普通模型），则不显示"思考过程"
-                            if let Some(summary) = reasoning_summary_opt {
-                                *reasoning_summary_arc_clone.lock().unwrap() = summary;
-                                println!("📝 API返回了推理摘要，已保存");
+                            // 推理摘要已经在回调中实时更新到 reasoning_summary_arc_clone
+                            // 这里只需要打印确认信息
+                            if let Some(ref summary) = reasoning_summary_opt {
+                                println!("   - 推理摘要: {} 字符", summary.len());
+                                println!("   ✅ 推理模型 - 已提取推理过程！");
                             } else {
-                                println!("ℹ️  API未返回推理摘要（这是正常的，普通模型不提供推理过程）");
+                                println!("   - 无推理摘要（普通模型）");
                             }
 
                             Ok(content)
@@ -563,11 +603,35 @@ impl ChatApp {
                 }
 
                 self.pending_response = None;
+                // 结束帧泵
+                self.streaming_pump_running = false;
                 cx.notify();
             } else {
                 cx.notify();
             }
         }
+    }
+
+    // 在流式期间按帧触发刷新，直到 pending_response 结束
+    fn ensure_streaming_pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_response.is_some() && !self.streaming_pump_running {
+            self.streaming_pump_running = true;
+            self.schedule_next_frame(window, cx);
+        }
+    }
+
+    fn schedule_next_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_next_frame(window, |this, window, cx| {
+            if this.pending_response.is_some() {
+                // 触发一次渲染，让 UI 消化最新的流式内容
+                cx.notify();
+                // 持续调度下一帧
+                this.schedule_next_frame(window, cx);
+            } else {
+                this.streaming_pump_running = false;
+                cx.notify();
+            }
+        });
     }
 }
 
@@ -575,6 +639,9 @@ impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 处理pending API响应
         self.check_pending_response(cx);
+
+        // 在有流式数据时确保帧泵激活，保持流畅刷新
+        self.ensure_streaming_pump(window, cx);
 
         // 处理待清空的输入框
         if self.pending_clear_input {
@@ -635,10 +702,41 @@ impl Render for ChatApp {
                                     .child(self.current_conversation.title.clone())
                             )
                             .child(
+                                // 右侧状态与开关
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(0x6c757d))
-                                    .child("Markdown enabled • Prototype")
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(0x6c757d))
+                                            .child("Markdown enabled • Prototype")
+                                    )
+                                    .child(
+                                        // Responses API 开关（仅切换内部逻辑，不影响端点选择）
+                                        div()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(rgb(0xd1d5db))
+                                            .cursor_pointer()
+                                            .hover(|style| style.bg(rgb(0xf8f9fa)))
+                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this: &mut Self, _, _window, cx| {
+                                                this.use_responses_api = !this.use_responses_api;
+                                                this.openai.set_use_responses_api(this.use_responses_api);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(rgb(0x212529))
+                                                    .child(
+                                                        if self.use_responses_api { "Responses API: ON" } else { "Responses API: OFF" }
+                                                    )
+                                            )
+                                    )
                             )
                     )
                     .child(
@@ -668,6 +766,12 @@ impl Render for ChatApp {
                                             .text_xs()
                                             .text_color(rgb(0x664d03))
                                             .child(if self.use_real_api { "API模式: ✅ 真实API" } else { "API模式: 🎭 模拟" })
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(0x664d03))
+                                            .child(if self.use_responses_api { "API类型: Responses" } else { "API类型: Chat" })
                                     )
                                     .child(
                                         div()
@@ -809,6 +913,7 @@ impl Render for ChatApp {
                             .w_full()
                             .overflow_y_scroll()  // 修改：使用overflow_y_scroll而不是overflow_hidden
                             .p_6()
+                            .pb(px(96.)) // 预留底部空间，避免与输入区视觉重叠
                             .when(!has_messages, |d| {
                                 d.flex()
                                     .items_center()
