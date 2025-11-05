@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::models::Conversation;
 
+#[derive(Clone)]
 pub struct StorageService {
     storage_path: PathBuf,
 }
@@ -51,6 +52,7 @@ impl StorageService {
         Ok(conversations)
     }
 
+    #[allow(dead_code)]
     pub fn delete_conversation(&self, conversation_id: uuid::Uuid) -> Result<()> {
         let file_path = self.storage_path.join(format!("{}.json", conversation_id));
         if file_path.exists() {
