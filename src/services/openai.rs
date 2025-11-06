@@ -386,6 +386,7 @@ impl OpenAIService {
         let request_body = json!({
             "model": &self.config.model,
             "input": input.trim(),
+            "instructions": "You are a helpful assistant. Always respond using proper Markdown formatting. Use # for headings (# H1, ## H2, ### H3), **bold** for emphasis, *italic* for less emphasis, `code` for inline code, ```language for code blocks, - for lists, and > for quotes. Format your responses clearly with appropriate headings and formatting.",
             "reasoning": {
                 "effort": self.config.reasoning_effort,
                 "summary": self.config.reasoning_summary,
@@ -470,7 +471,9 @@ impl OpenAIService {
                                     if let Some(delta) = json["delta"].as_str() {
                                         reasoning_summary.push_str(delta);
                                         on_reasoning(delta.to_string());
-                                        println!("🧠 推理摘要delta: {} 字符", delta.len());
+                                        println!("🧠 推理摘要delta: \"{}\"", delta);
+                                    } else {
+                                        println!("⚠️ 推理事件但无delta | JSON: {}", serde_json::to_string(&json).unwrap_or_default());
                                     }
                                 }
                                 "response.output_text.delta" => {
@@ -478,22 +481,25 @@ impl OpenAIService {
                                     if let Some(delta) = json["delta"].as_str() {
                                         full_response.push_str(delta);
                                         on_chunk(delta.to_string());
-                                        println!("📦 输出delta: {} 字符", delta.len());
+                                        println!("📦 输出delta: \"{}\"", delta);
+                                    } else {
+                                        println!("⚠️ 输出事件但无delta | JSON: {}", serde_json::to_string(&json).unwrap_or_default());
                                     }
                                 }
                                 "response.completed" => {
-                                    println!("✅ 响应完成事件");
+                                    println!("✅ 响应完成 | 完整响应长度: {} | 推理长度: {}",
+                                        full_response.len(), reasoning_summary.len());
                                 }
                                 _ => {
-                                    // 其他事件类型，暂时忽略
+                                    // 打印所有其他事件以便调试
                                     if !current_event.is_empty() {
-                                        println!("ℹ️ 其他事件: {}", current_event);
+                                        println!("ℹ️ 事件: {} | 数据: {}", current_event, data);
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            println!("⚠️ 解析 JSON 失败: {} - 事件: {} - 数据: {}", e, current_event, data);
+                            println!("⚠️ JSON解析失败: {} | 事件: {} | 原始数据: {}", e, current_event, data);
                         }
                     }
                 }
@@ -511,6 +517,27 @@ impl OpenAIService {
                  full_response.len(),
                  reasoning_opt.as_ref().map(|s| format!("{} 字符", s.len())));
 
+        // 🔍 调试：显示完整的响应内容（前500字符）
+        println!("📄 完整响应内容预览:");
+        let preview = if full_response.len() > 500 {
+            format!("{}...", &full_response[..500])
+        } else {
+            full_response.clone()
+        };
+        println!("{}", preview);
+        println!("─────────────────────────────────────");
+
+        if let Some(ref summary) = reasoning_opt {
+            println!("🧠 完整推理摘要预览:");
+            let summary_preview = if summary.len() > 300 {
+                format!("{}...", &summary[..300])
+            } else {
+                summary.clone()
+            };
+            println!("{}", summary_preview);
+            println!("─────────────────────────────────────");
+        }
+
         Ok((full_response, reasoning_opt))
     }
 
@@ -520,10 +547,10 @@ impl OpenAIService {
     fn convert_messages_to_json(&self, messages: &[Message]) -> Result<Vec<serde_json::Value>> {
         let mut json_messages = Vec::new();
 
-        // 添加系统消息
+        // 添加系统消息 - 明确要求Markdown格式
         json_messages.push(json!({
             "role": "system",
-            "content": "You are a helpful AI assistant. You can use Markdown formatting in your responses."
+            "content": "You are a helpful assistant. Always respond using proper Markdown formatting. Use # for headings (# H1, ## H2, ### H3), **bold** for emphasis, *italic* for less emphasis, `code` for inline code, ```language for code blocks, - for lists, and > for quotes. Format your responses clearly with appropriate headings and formatting."
         }));
 
         // 添加对话历史
@@ -540,10 +567,10 @@ impl OpenAIService {
     fn convert_messages(&self, messages: &[Message]) -> Result<Vec<ChatCompletionRequestMessage>> {
         let mut openai_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
 
-        // Add system message
+        // Add system message - 明确要求Markdown格式
         openai_messages.push(
             ChatCompletionRequestSystemMessageArgs::default()
-                .content("You are a helpful AI assistant. You can use Markdown formatting in your responses.")
+                .content("You are a helpful assistant. Always respond using proper Markdown formatting. Use # for headings (# H1, ## H2, ### H3), **bold** for emphasis, *italic* for less emphasis, `code` for inline code, ```language for code blocks, - for lists, and > for quotes. Format your responses clearly with appropriate headings and formatting.")
                 .build()?
                 .into(),
         );

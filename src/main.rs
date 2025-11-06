@@ -124,6 +124,8 @@ struct ChatApp {
     show_reasoning_expanded: bool,
     // 追踪哪些消息的推理摘要是展开的（使用消息timestamp）
     expanded_reasoning_messages: std::collections::HashSet<i64>,
+    // 性能优化：上次UI更新时间（用于节流）
+    last_ui_update: std::time::Instant,
 }
 
 impl EventEmitter<()> for ChatApp {}
@@ -220,6 +222,7 @@ impl ChatApp {
             reasoning_duration: None,
             show_reasoning_expanded: false,
             expanded_reasoning_messages: std::collections::HashSet::new(),
+            last_ui_update: std::time::Instant::now(),
         };
 
         // 读取服务初始配置（来自环境变量）
@@ -515,21 +518,51 @@ impl ChatApp {
                 cx.notify();
             }
 
-            // 📝 实时更新推理摘要（在思考阶段实时显示）
+            // 📝 实时更新推理摘要和流式内容（使用节流优化性能）
             if self.is_reasoning {
-                let current_reasoning_summary = pending.reasoning_summary_arc.lock().unwrap().clone();
-                if !current_reasoning_summary.is_empty() {
-                    if self.reasoning_summary.as_ref().map_or(true, |s| s != &current_reasoning_summary) {
-                        self.reasoning_summary = Some(current_reasoning_summary);
-                        cx.notify();
-                    }
-                }
+                // ⚡ 性能优化：限制UI更新频率到每100ms一次
+                let now = std::time::Instant::now();
+                let time_since_last_update = now.duration_since(self.last_ui_update);
+                let should_throttle = time_since_last_update.as_millis() < 100;
 
-                // 📝 实时更新流式内容（在推理阶段进行）
-                let current_streaming_content = pending.streaming_content_arc.lock().unwrap().clone();
-                if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
-                    if msg.content != current_streaming_content {
-                        msg.content = current_streaming_content;
+                if !should_throttle {
+                    let current_reasoning_summary = pending.reasoning_summary_arc.lock().unwrap().clone();
+                    let current_streaming_content = pending.streaming_content_arc.lock().unwrap().clone();
+
+                    let mut needs_notify = false;
+
+                    // 更新推理摘要
+                    if !current_reasoning_summary.is_empty() {
+                        if self.reasoning_summary.as_ref().map_or(true, |s| s != &current_reasoning_summary) {
+                            self.reasoning_summary = Some(current_reasoning_summary.clone());
+                            needs_notify = true;
+                        }
+                    }
+
+                    // 更新流式内容和消息中的推理摘要
+                    if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
+                        // 更新内容
+                        if msg.content != current_streaming_content {
+                            msg.content = current_streaming_content.clone();
+                            needs_notify = true;
+                        }
+
+                        // 🧠 实时更新消息中的推理摘要
+                        if !current_reasoning_summary.is_empty() {
+                            let should_update = match &msg.reasoning_summary {
+                                Some(existing) => existing != &current_reasoning_summary,
+                                None => true,
+                            };
+
+                            if should_update {
+                                msg.reasoning_summary = Some(current_reasoning_summary);
+                                needs_notify = true;
+                            }
+                        }
+                    }
+
+                    if needs_notify {
+                        self.last_ui_update = now;
                         cx.notify();  // 触发UI重新渲染
                     }
                 }
@@ -561,12 +594,12 @@ impl ChatApp {
                             println!("✅ 成功接收响应，长度: {} 字符", content.len());
                             if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
                                 msg.content = content;
-                                // 保存推理摘要和耗时到消息中
-                                msg.reasoning_summary = self.reasoning_summary.clone();
+                                // ⚠️ 不要再次更新推理摘要！它已经在实时更新中设置了
+                                // msg.reasoning_summary 已经在流式传输时更新
                                 msg.reasoning_duration = self.reasoning_duration;
 
                                 if let Some(summary) = &msg.reasoning_summary {
-                                    println!("💾 保存推理摘要到消息，长度: {} 字符", summary.len());
+                                    println!("💾 最终推理摘要长度: {} 字符", summary.len());
                                 }
                             }
                             self.last_error = None;
@@ -956,94 +989,7 @@ impl Render for ChatApp {
                                     },
                                 ))
                             })
-                            .when(self.is_reasoning && self.reasoning_summary.is_some(), |d| {
-                                // 🧠 只有当有推理摘要数据时才显示"思考过程"框
-                                // 这符合 Raycast 的行为：有 reasoning summary 就显示，没有就跳过
-                                let elapsed = if let Some(start_time) = self.reasoning_start_time {
-                                    start_time.elapsed().as_secs_f64()
-                                } else {
-                                    0.0
-                                };
-
-                                // 获取当前累积的推理摘要
-                                let current_summary = self.reasoning_summary.clone().unwrap_or_default();
-
-                                d.child(
-                                    div()
-                                        .mt_4()
-                                        .w_full()
-                                        .child(
-                                            div()
-                                                .max_w(px(700.))
-                                                .p_4()
-                                                .rounded_lg()
-                                                .bg(rgb(0xf5f5f5))  // 浅灰色背景
-                                                .border_1()
-                                                .border_color(rgb(0xd0d0d0))
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap_3()
-                                                        .child(
-                                                            // 顶部：标题和计时器
-                                                            div()
-                                                                .flex()
-                                                                .flex_row()
-                                                                .items_center()
-                                                                .justify_between()
-                                                                .child(
-                                                                    div()
-                                                                        .flex()
-                                                                        .items_center()
-                                                                        .gap_2()
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(rgb(0x2d2d2d))
-                                                                                .font_weight(gpui::FontWeight::BOLD)
-                                                                                .child("▼")
-                                                                        )
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(rgb(0x2d2d2d))
-                                                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                                                .child("🧠 推理过程")
-                                                                        )
-                                                                )
-                                                                .child(
-                                                                    // ⏱️ 实时计时器
-                                                                    div()
-                                                                        .text_xs()
-                                                                        .text_color(rgb(0x555555))
-                                                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                                                        .child(format!("⏱️ {:.1}s", elapsed))
-                                                                )
-                                                        )
-                                                        .when(!current_summary.is_empty(), |d| {
-                                                            // 显示累积的推理摘要内容（流式）
-                                                            d.child(
-                                                                div()
-                                                                    .mt_1()
-                                                                    .p_3()
-                                                                    .rounded(px(6.))
-                                                                    .bg(rgb(0xfafafa))
-                                                                    .border_1()
-                                                                    .border_color(rgb(0xe0e0e0))
-                                                                    .child(
-                                                                        div()
-                                                                            .w_full()
-                                                                            .text_xs()
-                                                                            .text_color(rgb(0x333333))
-                                                                            .child(current_summary)
-                                                                    )
-                                                            )
-                                                        })
-                                                )
-                                        )
-                                )
-                            })
+                            // ⚠️ 已删除额外的推理框 - 推理摘要现在只在消息列表中显示
                     )
                     .child(
                         // 🎯 专业输入区域 - ChatGPT风格

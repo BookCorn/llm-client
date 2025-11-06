@@ -1,7 +1,25 @@
-use gpui::{div, prelude::*, px, rgb, Window};
-use gpui_component::{h_flex, text::TextView, v_flex};
+use gpui::{div, prelude::*, px, rems, rgb, Window};
+use gpui_component::{h_flex, text::{TextView, TextViewStyle}, v_flex};
 
 use crate::models::Message;
+
+/// 创建自定义的 Markdown 样式
+fn create_markdown_style() -> TextViewStyle {
+    TextViewStyle::default()
+        .paragraph_gap(rems(0.5))  // 段落间距
+        .heading_font_size(|level, _base| {
+            // 自定义标题字体大小
+            match level {
+                1 => px(28.),   // H1 最大
+                2 => px(24.),   // H2
+                3 => px(20.),   // H3
+                4 => px(18.),   // H4
+                5 => px(16.),   // H5
+                6 => px(14.),   // H6
+                _ => px(14.),
+            }
+        })
+}
 
 pub fn render_message_list<V: gpui::Render + 'static>(
     messages: &[Message],
@@ -130,7 +148,7 @@ where
                                                 })
                                         )
                                         .when(is_expanded, |d| {
-                                            // 展开时显示完整推理摘要
+                                            // 展开时显示完整推理摘要 - 使用 Markdown 渲染
                                             d.child(
                                                 div()
                                                     .mt_1()
@@ -139,12 +157,23 @@ where
                                                     .bg(rgb(0xfafafa))
                                                     .border_1()
                                                     .border_color(rgb(0xe0e0e0))
+                                                    .max_w(px(700.))  // 限制最大宽度防止溢出
                                                     .child(
                                                         div()
                                                             .w_full()
                                                             .text_xs()
                                                             .text_color(rgb(0x333333))  // 深色文字
-                                                            .child(summary.clone())
+                                                            .child(
+                                                                TextView::markdown(
+                                                                    ("reasoning", message.timestamp.timestamp() as usize),
+                                                                    summary,
+                                                                    window,
+                                                                    cx,
+                                                                )
+                                                                .style(create_markdown_style())
+                                                                .text_color(rgb(0x333333))
+                                                                .text_xs()
+                                                            )
                                                     )
                                             )
                                         })
@@ -163,6 +192,7 @@ where
                                     window,
                                     cx,
                                 )
+                                .style(create_markdown_style())
                                 .text_color(rgb(0x1a1a1a))  // 深色文字
                             )
                     )
