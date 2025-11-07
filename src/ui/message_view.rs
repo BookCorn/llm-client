@@ -92,97 +92,89 @@ where
                     )
                     // 推理摘要（如果有）
                     .when_some(message.reasoning_summary.as_ref(), |d, summary| {
+                        let summary_text = summary.clone();
                         d.child(
-                            div()
+                            v_flex()
                                 .w_full()
-                                .max_w(px(700.))
-                                .p_3()
-                                .rounded(px(8.))
-                                .bg(rgb(0xf5f5f5))
+                                .min_w(px(0.))
+                                .max_w(px(720.))
+                                .flex_shrink()
                                 .border_1()
-                                .border_color(rgb(0xd0d0d0))
+                                .border_color(rgb(0xd6d6d6))
+                                .rounded(px(10.))
+                                .bg(rgb(0xfdfdfd))
                                 .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_2()
+                                    h_flex()
+                                        .w_full()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_3()
+                                        .py_2()
+                                        .bg(rgb(0xf5f5f5))
+                                        .cursor_pointer()
+                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this: &mut V, _, window, cx| {
+                                            on_toggle_reasoning(this, msg_timestamp, window, cx);
+                                        }))
                                         .child(
-                                            // 标题行 - 可点击展开/收起
-                                            div()
-                                                .flex()
-                                                .flex_row()
+                                            h_flex()
                                                 .items_center()
-                                                .justify_between()
-                                                .cursor_pointer()
-                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this: &mut V, _, window, cx| {
-                                                    on_toggle_reasoning(this, msg_timestamp, window, cx);
-                                                }))
+                                                .gap_2()
                                                 .child(
                                                     div()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .font_weight(gpui::FontWeight::BOLD)
-                                                                .text_color(rgb(0x2d2d2d))  // 深色文字
-                                                                .child(if is_expanded { "▼" } else { "▶" })
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                                .text_color(rgb(0x2d2d2d))  // 深色文字
-                                                                .child("🧠 推理过程")
-                                                        )
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .text_color(rgb(0x2d2d2d))
+                                                        .child(if is_expanded { "▼" } else { "▶" })
                                                 )
-                                                .when_some(message.reasoning_duration, |d, duration| {
-                                                    d.child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(rgb(0x555555))
-                                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                                            .child(format!("⏱️ {:.1}s", duration))
-                                                    )
-                                                })
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                        .text_color(rgb(0x2d2d2d))
+                                                        .child("🧠 推理过程")
+                                                )
                                         )
-                                        .when(is_expanded, |d| {
-                                            // 展开时显示完整推理摘要 - 使用 Markdown 渲染
-                                            d.child(
+                                        .when_some(message.reasoning_duration, |header, duration| {
+                                            header.child(
                                                 div()
-                                                    .mt_1()
-                                                    .p_3()
-                                                    .rounded(px(6.))
-                                                    .bg(rgb(0xfafafa))
-                                                    .border_1()
-                                                    .border_color(rgb(0xe0e0e0))
-                                                    .max_w(px(700.))  // 限制最大宽度防止溢出
-                                                    .child(
-                                                        div()
-                                                            .w_full()
-                                                            .text_xs()
-                                                            .text_color(rgb(0x333333))  // 深色文字
-                                                            .child(
-                                                                TextView::markdown(
-                                                                    ("reasoning", message.timestamp.timestamp() as usize),
-                                                                    summary,
-                                                                    window,
-                                                                    cx,
-                                                                )
-                                                                .style(create_markdown_style())
-                                                                .text_color(rgb(0x333333))
-                                                                .text_xs()
-                                                            )
-                                                    )
+                                                    .text_xs()
+                                                    .text_color(rgb(0x555555))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .child(format!("⏱️ {:.1}s", duration))
                                             )
                                         })
                                 )
+                                .when(is_expanded, |card| {
+                                    card.child(
+                                        div()
+                                            .w_full()
+                                            .bg(rgb(0xffffff))
+                                            .border_t_1()
+                                            .border_color(rgb(0xededed))
+                                            .px_4()
+                                            .py_3()
+                                            .text_xs()
+                                            .min_w(px(0.))
+                                            .flex_shrink()
+                                            .child(
+                                                TextView::markdown(
+                                                    ("reasoning", message.timestamp.timestamp() as usize),
+                                                    &summary_text,
+                                                    window,
+                                                    cx,
+                                                )
+                                                .style(create_markdown_style())
+                                                .text_color(rgb(0x333333))
+                                            )
+                                    )
+                                })
                         )
                     })
                     .child(
                         div()
                             .w_full()
+                            .flex_shrink()
+                            .min_w(px(0.))
                             .max_w(px(900.))  // 添加最大宽度确保换行
                             .text_color(rgb(0x1a1a1a))  // 深色文字
                             .child(

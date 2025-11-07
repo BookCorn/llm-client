@@ -7,8 +7,11 @@ use gpui::{
 use gpui_component::{*, input::{Input, InputEvent, InputState}};
 use uuid::Uuid;
 
+mod config;
+mod mcp;
 mod models;
 mod services;
+mod tools;
 mod ui;
 
 use models::{Conversation, Message};
@@ -420,20 +423,28 @@ impl ChatApp {
                             println!("🧠 推理摘要chunk: {} 字符，累积: {}", reasoning_chunk.len(), summary.len());
                         }
                     ).await {
-                        Ok((content, reasoning_summary_opt)) => {
+                        Ok(result) => {
                             println!("✅ Responses API 调用成功！");
-                            println!("   - 输出长度: {} 字符", content.len());
+                            println!("   - 输出长度: {} 字符", result.content.len());
 
                             // 推理摘要已经在回调中实时更新到 reasoning_summary_arc_clone
                             // 这里只需要打印确认信息
-                            if let Some(ref summary) = reasoning_summary_opt {
+                            if let Some(ref summary) = result.reasoning_summary {
                                 println!("   - 推理摘要: {} 字符", summary.len());
                                 println!("   ✅ 推理模型 - 已提取推理过程！");
                             } else {
                                 println!("   - 无推理摘要（普通模型）");
                             }
 
-                            Ok(content)
+                            // 检测工具调用
+                            if result.has_tool_calls() {
+                                println!("   🔧 检测到 {} 个工具调用（暂不执行）", result.tool_calls.len());
+                                for tool_call in &result.tool_calls {
+                                    println!("      - {}", tool_call.name);
+                                }
+                            }
+
+                            Ok(result.content)
                         }
                         Err(e) => {
                             println!("❌ API调用失败: {}", e);
@@ -1083,6 +1094,7 @@ fn main() {
                     size(px(1400.), px(900.)),
                     cx,
                 ))),
+                window_min_size: Some(size(px(1100.), px(720.))),
                 ..Default::default()
             };
 
