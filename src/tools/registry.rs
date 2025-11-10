@@ -1,7 +1,6 @@
 /// 工具注册表
 ///
 /// 管理所有可用工具，提供查找和列举功能
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -98,7 +97,7 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::spec::{Tool, ToolSpec, ToolOutput};
+    use crate::tools::spec::{Tool, ToolOutput, ToolSpec};
     use async_trait::async_trait;
     use serde_json::Value;
 

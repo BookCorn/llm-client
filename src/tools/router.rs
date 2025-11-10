@@ -3,8 +3,7 @@
 /// 负责将模型的工具调用请求路由到对应的工具实现
 ///
 /// 参考 codex-rs/core/src/tools/router.rs
-
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 use crate::services::events::ResponseItem;
@@ -139,8 +138,7 @@ mod tests {
         assert_eq!(server, "docs");
         assert_eq!(tool, "search");
 
-        let (server, tool) =
-            ToolRouter::parse_mcp_tool_name("mcp__filesystem__read_file").unwrap();
+        let (server, tool) = ToolRouter::parse_mcp_tool_name("mcp__filesystem__read_file").unwrap();
         assert_eq!(server, "filesystem");
         assert_eq!(tool, "read_file");
     }

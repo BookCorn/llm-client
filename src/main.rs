@@ -1,10 +1,13 @@
 use anyhow::Result;
 use gpui::{
-    actions, App, Application, AssetSource, Bounds, Context, Entity, EventEmitter, Focusable,
-    FocusHandle, SharedString, Subscription, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb,
-    size,
+    App, Application, AssetSource, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    SharedString, Subscription, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px,
+    rgb, size,
 };
-use gpui_component::{*, input::{Input, InputEvent, InputState}};
+use gpui_component::{
+    input::{InputEvent, InputState},
+    *,
+};
 use uuid::Uuid;
 
 mod config;
@@ -12,11 +15,9 @@ mod mcp;
 mod models;
 mod services;
 mod tools;
-mod ui;
 
 use models::{Conversation, Message};
-use services::{OpenAIService, StorageService};
-use ui::{render_message_list, render_sidebar};
+use services::{GenerationControl, GenerationPreset, OpenAIService, StorageService};
 
 actions!(chat, [Send, NewConversation]);
 
@@ -70,7 +71,12 @@ struct ErrorLog {
 }
 
 impl ErrorLog {
-    fn new(error: &anyhow::Error, user_message: String, api_endpoint: String, model: String) -> Self {
+    fn new(
+        error: &anyhow::Error,
+        user_message: String,
+        api_endpoint: String,
+        model: String,
+    ) -> Self {
         use std::time::SystemTime;
 
         let timestamp = {
@@ -104,7 +110,10 @@ struct ChatApp {
     // 使用 gpui-component 的专业 Input 组件
     input_state: Entity<InputState>,
     _input_subscription: Subscription,
+    sidebar_search: Entity<InputState>,
+    _sidebar_search_subscription: Subscription,
     focus_handle: FocusHandle,
+    generation_control: GenerationControl,
     use_real_api: bool,
     // 开关：是否使用 Responses API（仅由用户控制）
     use_responses_api: bool,
@@ -129,6 +138,8 @@ struct ChatApp {
     expanded_reasoning_messages: std::collections::HashSet<i64>,
     // 性能优化：上次UI更新时间（用于节流）
     last_ui_update: std::time::Instant,
+    inspector_visible: bool,
+    conversation_filter: String,
 }
 
 impl EventEmitter<()> for ChatApp {}
@@ -167,37 +178,72 @@ impl ChatApp {
              API Base: {}\n\
              Model: {}\n\
              模式: {}",
-            if api_key_set { "✅ 已配置" } else { "❌ 未配置" },
-            api_base.as_ref().unwrap_or(&"默认 (OpenAI 官方)".to_string()),
+            if api_key_set {
+                "✅ 已配置"
+            } else {
+                "❌ 未配置"
+            },
+            api_base
+                .as_ref()
+                .unwrap_or(&"默认 (OpenAI 官方)".to_string()),
             model,
-            if use_real_api { "真实API" } else { "模拟模式" }
+            if use_real_api {
+                "真实API"
+            } else {
+                "模拟模式"
+            }
         );
 
         println!("{}", debug_info);
 
-        // 创建专业的 InputState（多行模式）
+        // 创建专业的 InputState（多行 + 自动增高）
         let input_state = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("输入消息... (Shift+Enter 换行, Enter 发送)")
-                .multi_line()
+                .placeholder("Ask anything… (Shift+Enter 换行)")
+                .auto_grow(3, 10)
         });
 
-        // 订阅输入事件
-        let _input_subscription = cx.subscribe(&input_state, move |this, _input, event, cx| {
-            match event {
-                InputEvent::Change => {
-                    cx.notify();
-                }
-                InputEvent::PressEnter { secondary } => {
-                    if !secondary {
+        let sidebar_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search conversations"));
+
+        // 订阅输入事件（需要 window 获取修饰键状态）
+        let _input_subscription = cx.subscribe_in(
+            &input_state,
+            window,
+            move |this, _input, event, window, cx| {
+                match event {
+                    InputEvent::Change => {
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { secondary } => {
+                        let modifiers = window.modifiers();
+                        let shift_pressed = modifiers.shift;
+
+                        // Shift + Enter: 仅换行，不发送
+                        if shift_pressed && !secondary {
+                            return;
+                        }
+
+                        this.trim_input_trailing_newlines(window, cx);
                         this.send_message(cx);
                     }
+                    InputEvent::Focus | InputEvent::Blur => {
+                        // 可以在这里添加焦点状态处理
+                    }
                 }
-                InputEvent::Focus | InputEvent::Blur => {
-                    // 可以在这里添加焦点状态处理
+            },
+        );
+
+        let _sidebar_search_subscription = cx.subscribe_in(
+            &sidebar_search,
+            window,
+            |this: &mut Self, state, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.conversation_filter = state.read(cx).value().to_string();
+                    cx.notify();
                 }
-            }
-        });
+            },
+        );
 
         let mut app = Self {
             current_conversation,
@@ -206,7 +252,10 @@ impl ChatApp {
             openai: OpenAIService::new(),
             input_state,
             _input_subscription,
+            sidebar_search,
+            _sidebar_search_subscription,
             focus_handle: cx.focus_handle(),
+            generation_control: GenerationControl::default(),
             use_real_api,
             use_responses_api: false,
             is_loading: false,
@@ -226,6 +275,8 @@ impl ChatApp {
             show_reasoning_expanded: false,
             expanded_reasoning_messages: std::collections::HashSet::new(),
             last_ui_update: std::time::Instant::now(),
+            inspector_visible: false,
+            conversation_filter: String::new(),
         };
 
         // 读取服务初始配置（来自环境变量）
@@ -238,21 +289,46 @@ impl ChatApp {
         Conversation::new()
     }
 
+    fn sync_current_conversation(&mut self, bring_to_front: bool) {
+        if let Some(pos) = self
+            .conversations
+            .iter()
+            .position(|c| c.id == self.current_conversation.id)
+        {
+            self.conversations[pos] = self.current_conversation.clone();
+            if bring_to_front && pos != 0 {
+                let conv = self.conversations.remove(pos);
+                self.conversations.insert(0, conv);
+            }
+        } else if bring_to_front {
+            self.conversations
+                .insert(0, self.current_conversation.clone());
+        } else {
+            self.conversations.push(self.current_conversation.clone());
+        }
+    }
+
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Save current conversation if it has messages
         if !self.current_conversation.is_empty() {
             let _ = self.storage.save_conversation(&self.current_conversation);
 
             // Update or add to conversations list
-            if let Some(pos) = self.conversations.iter().position(|c| c.id == self.current_conversation.id) {
+            if let Some(pos) = self
+                .conversations
+                .iter()
+                .position(|c| c.id == self.current_conversation.id)
+            {
                 self.conversations[pos] = self.current_conversation.clone();
             } else {
-                self.conversations.insert(0, self.current_conversation.clone());
+                self.conversations
+                    .insert(0, self.current_conversation.clone());
             }
         }
 
         // Create new conversation
         self.current_conversation = Conversation::new();
+        self.sync_current_conversation(true);
 
         // 清空输入框
         self.input_state.update(cx, |state, cx| {
@@ -268,7 +344,11 @@ impl ChatApp {
             let _ = self.storage.save_conversation(&self.current_conversation);
 
             // Update in list
-            if let Some(pos) = self.conversations.iter().position(|c| c.id == self.current_conversation.id) {
+            if let Some(pos) = self
+                .conversations
+                .iter()
+                .position(|c| c.id == self.current_conversation.id)
+            {
                 self.conversations[pos] = self.current_conversation.clone();
             }
         }
@@ -276,6 +356,7 @@ impl ChatApp {
         // Load selected conversation
         if let Some(conv) = self.conversations.iter().find(|c| c.id == id) {
             self.current_conversation = conv.clone();
+            self.sync_current_conversation(true);
 
             // 清空输入框
             self.input_state.update(cx, |state, cx| {
@@ -284,6 +365,16 @@ impl ChatApp {
 
             cx.notify();
         }
+    }
+
+    fn trim_input_trailing_newlines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input_state.update(cx, |state, cx| {
+            let current = state.value().to_string();
+            let trimmed = current.trim_end_matches('\n').to_string();
+            if trimmed.len() != current.len() {
+                state.set_value(trimmed, window, cx);
+            }
+        });
     }
 
     fn send_message(&mut self, cx: &mut Context<Self>) {
@@ -311,8 +402,8 @@ impl ChatApp {
         self.pending_clear_input = true;
 
         // 🔄 修改：不再立即设置is_loading，而是等待接收到API响应
-        self.is_loading = false;  // 发送阶段不显示加载
-        self.is_reasoning = false;  // 推理阶段由API响应触发
+        self.is_loading = false; // 发送阶段不显示加载
+        self.is_reasoning = false; // 推理阶段由API响应触发
         self.reasoning_summary = None;
         self.reasoning_start_time = None;
         self.reasoning_duration = None;
@@ -324,6 +415,8 @@ impl ChatApp {
         // Add empty assistant message that will be filled by API response
         let assistant_message = Message::new_assistant(String::new());
         self.current_conversation.add_message(assistant_message);
+        self.sync_current_conversation(true);
+        let _ = self.storage.save_conversation(&self.current_conversation);
 
         let message_index = self.current_conversation.messages.len() - 1;
 
@@ -337,8 +430,7 @@ impl ChatApp {
         // 收集API配置信息用于错误日志
         let api_endpoint = std::env::var("OPENAI_API_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let model = std::env::var("OPENAI_MODEL")
-            .unwrap_or_else(|_| "gpt-4".to_string());
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".to_string());
         let user_msg_for_log = input_text.clone();
 
         // Create Arc for conversation ID to update later
@@ -517,10 +609,44 @@ impl ChatApp {
         });
     }
 
+    fn preset_label(preset: &GenerationPreset) -> &'static str {
+        match preset {
+            GenerationPreset::Precise => "Precise",
+            GenerationPreset::Balanced => "Balanced",
+            GenerationPreset::Creative => "Creative",
+            GenerationPreset::Concise => "Concise",
+            GenerationPreset::Detailed => "Detailed",
+            GenerationPreset::Custom(_) => "Custom",
+        }
+    }
+
+    fn set_generation_preset(&mut self, preset: GenerationPreset, cx: &mut Context<Self>) {
+        self.generation_control.preset = preset;
+        cx.notify();
+    }
+
+    fn cycle_generation_preset(&mut self, cx: &mut Context<Self>) {
+        let next = match self.generation_control.preset.clone() {
+            GenerationPreset::Precise => GenerationPreset::Balanced,
+            GenerationPreset::Balanced => GenerationPreset::Creative,
+            GenerationPreset::Creative => GenerationPreset::Concise,
+            GenerationPreset::Concise => GenerationPreset::Detailed,
+            GenerationPreset::Detailed => GenerationPreset::Precise,
+            GenerationPreset::Custom(_) => GenerationPreset::Balanced,
+        };
+
+        self.generation_control.preset = next;
+        cx.notify();
+    }
+
     fn check_pending_response(&mut self, cx: &mut Context<Self>) {
         if let Some(pending) = self.pending_response.clone() {
             // 🧠 检查推理是否已开始
-            if pending.reasoning_started.load(std::sync::atomic::Ordering::SeqCst) && !self.is_reasoning {
+            if pending
+                .reasoning_started
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && !self.is_reasoning
+            {
                 self.is_reasoning = true;
                 if let Some(start_instant) = *pending.reasoning_start_instant.lock().unwrap() {
                     self.reasoning_start_time = Some(start_instant);
@@ -537,21 +663,31 @@ impl ChatApp {
                 let should_throttle = time_since_last_update.as_millis() < 100;
 
                 if !should_throttle {
-                    let current_reasoning_summary = pending.reasoning_summary_arc.lock().unwrap().clone();
-                    let current_streaming_content = pending.streaming_content_arc.lock().unwrap().clone();
+                    let current_reasoning_summary =
+                        pending.reasoning_summary_arc.lock().unwrap().clone();
+                    let current_streaming_content =
+                        pending.streaming_content_arc.lock().unwrap().clone();
 
                     let mut needs_notify = false;
 
                     // 更新推理摘要
                     if !current_reasoning_summary.is_empty() {
-                        if self.reasoning_summary.as_ref().map_or(true, |s| s != &current_reasoning_summary) {
+                        if self
+                            .reasoning_summary
+                            .as_ref()
+                            .map_or(true, |s| s != &current_reasoning_summary)
+                        {
                             self.reasoning_summary = Some(current_reasoning_summary.clone());
                             needs_notify = true;
                         }
                     }
 
                     // 更新流式内容和消息中的推理摘要
-                    if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
+                    if let Some(msg) = self
+                        .current_conversation
+                        .messages
+                        .get_mut(pending.message_index)
+                    {
                         // 更新内容
                         if msg.content != current_streaming_content {
                             msg.content = current_streaming_content.clone();
@@ -574,7 +710,7 @@ impl ChatApp {
 
                     if needs_notify {
                         self.last_ui_update = now;
-                        cx.notify();  // 触发UI重新渲染
+                        cx.notify(); // 触发UI重新渲染
                     }
                 }
             }
@@ -603,11 +739,26 @@ impl ChatApp {
                     match result {
                         Ok(content) => {
                             println!("✅ 成功接收响应，长度: {} 字符", content.len());
-                            if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
+                            if let Some(msg) = self
+                                .current_conversation
+                                .messages
+                                .get_mut(pending.message_index)
+                            {
                                 msg.content = content;
                                 // ⚠️ 不要再次更新推理摘要！它已经在实时更新中设置了
                                 // msg.reasoning_summary 已经在流式传输时更新
                                 msg.reasoning_duration = self.reasoning_duration;
+                                if msg
+                                    .reasoning_summary
+                                    .as_ref()
+                                    .map_or(true, |s| s.trim().is_empty())
+                                {
+                                    let summary =
+                                        pending.reasoning_summary_arc.lock().unwrap().clone();
+                                    if !summary.is_empty() {
+                                        msg.reasoning_summary = Some(summary);
+                                    }
+                                }
 
                                 if let Some(summary) = &msg.reasoning_summary {
                                     println!("💾 最终推理摘要长度: {} 字符", summary.len());
@@ -632,17 +783,35 @@ impl ChatApp {
 
                             println!("📋 错误日志已创建: {:?}", error_log);
 
-                            if let Some(msg) = self.current_conversation.messages.get_mut(pending.message_index) {
-                                msg.content = format!("**❌ 错误**\n\n{}\n\n---\n💡 查看上方红色错误框了解详情", error_msg);
+                            if let Some(msg) = self
+                                .current_conversation
+                                .messages
+                                .get_mut(pending.message_index)
+                            {
+                                msg.content = format!(
+                                    "**❌ 错误**\n\n{}\n\n---\n💡 查看上方红色错误框了解详情",
+                                    error_msg
+                                );
+                                if msg
+                                    .reasoning_summary
+                                    .as_ref()
+                                    .map_or(true, |s| s.trim().is_empty())
+                                {
+                                    let summary =
+                                        pending.reasoning_summary_arc.lock().unwrap().clone();
+                                    if !summary.is_empty() {
+                                        msg.reasoning_summary = Some(summary);
+                                    }
+                                }
                             }
 
                             self.last_error = Some(error_msg);
                             self.error_log = Some(error_log);
-                            self.show_error_dialog = true;
                         }
                     }
 
                     self.streaming_content.clear();
+                    self.sync_current_conversation(true);
                     let _ = storage.save_conversation(&self.current_conversation);
                 }
 
@@ -681,13 +850,9 @@ impl ChatApp {
 
 impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 处理pending API响应
         self.check_pending_response(cx);
-
-        // 在有流式数据时确保帧泵激活，保持流畅刷新
         self.ensure_streaming_pump(window, cx);
 
-        // 处理待清空的输入框
         if self.pending_clear_input {
             self.input_state.update(cx, |state, cx| {
                 state.set_value("", window, cx);
@@ -695,389 +860,28 @@ impl Render for ChatApp {
             self.pending_clear_input = false;
         }
 
-        let messages = self.current_conversation.messages.clone();
-        let current_id = self.current_conversation.id;
-        let has_messages = !messages.is_empty();
+        let placeholder_text = if self.current_conversation.messages.is_empty() {
+            "UI 已移除，准备重新设计。"
+        } else {
+            "当前对话仍在运行，但界面已清空，等待新的设计。"
+        };
 
-        div()
+        v_flex()
             .size_full()
-            .flex()
-            .flex_row()
-            .bg(rgb(0xffffff))
+            .items_center()
+            .justify_center()
+            .gap_4()
             .child(
-                // Sidebar
-                render_sidebar(
-                    &self.conversations,
-                    current_id,
-                    |this: &mut Self, _, window, cx| {
-                        this.new_conversation(window, cx);
-                    },
-                    |this: &mut Self, id, _, window, cx| {
-                        this.load_conversation(id, window, cx);
-                    },
-                    cx,
-                )
+                div()
+                    .text_2xl()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("UI removed"),
             )
             .child(
-                // Main Chat Area - 使用flex列布局
                 div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // Chat Header - 固定高度
-                        div()
-                            .w_full()
-                            .h(px(64.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .px_6()
-                            .border_b_1()
-                            .border_color(rgb(0xdee2e6))
-                            .bg(rgb(0xffffff))
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(0x212529))
-                                    .child(self.current_conversation.title.clone())
-                            )
-                            .child(
-                                // 右侧状态与开关
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x6c757d))
-                                            .child("Markdown enabled • Prototype")
-                                    )
-                                    .child(
-                                        // Responses API 开关（仅切换内部逻辑，不影响端点选择）
-                                        div()
-                                            .px_2()
-                                            .py_1()
-                                            .rounded(px(6.))
-                                            .border_1()
-                                            .border_color(rgb(0xd1d5db))
-                                            .cursor_pointer()
-                                            .hover(|style| style.bg(rgb(0xf8f9fa)))
-                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this: &mut Self, _, _window, cx| {
-                                                this.use_responses_api = !this.use_responses_api;
-                                                this.openai.set_use_responses_api(this.use_responses_api);
-                                                cx.notify();
-                                            }))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(rgb(0x212529))
-                                                    .child(
-                                                        if self.use_responses_api { "Responses API: ON" } else { "Responses API: OFF" }
-                                                    )
-                                            )
-                                    )
-                            )
-                    )
-                    .child(
-                        // 调试信息面板
-                        div()
-                            .w_full()
-                            .px_6()
-                            .py_2()
-                            .bg(rgb(0xfff3cd))  // 黄色背景
-                            .border_b_1()
-                            .border_color(rgb(0xffc107))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_4()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(rgb(0x664d03))
-                                            .child("🔧 调试信息:")
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x664d03))
-                                            .child(if self.use_real_api { "API模式: ✅ 真实API" } else { "API模式: 🎭 模拟" })
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x664d03))
-                                            .child(if self.use_responses_api { "API类型: Responses" } else { "API类型: Chat" })
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x664d03))
-                                            .child(if self.is_loading { "状态: ⏳ 加载中..." } else { "状态: ✅ 就绪" })
-                                    )
-                                    .when_some(self.last_error.clone(), |d, err| {
-                                        d.child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(gpui::FontWeight::BOLD)
-                                                .text_color(rgb(0xdc3545))
-                                                .child(format!("错误: {}", err))
-                                        )
-                                    })
-                            )
-                    )
-                    .when(self.show_error_dialog, |d| {
-                        // 🚨 浅红色错误提示框
-                        d.child(
-                            div()
-                                .w_full()
-                                .px_6()
-                                .py_4()
-                                .bg(rgb(0xf8d7da))  // 浅红色背景
-                                .border_b_1()
-                                .border_color(rgb(0xf5c2c7))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .justify_between()
-                                        .items_start()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .flex()
-                                                .flex_col()
-                                                .gap_3()
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .child(
-                                                            div()
-                                                                .text_base()
-                                                                .font_weight(gpui::FontWeight::BOLD)
-                                                                .text_color(rgb(0x842029))
-                                                                .child("🚨 API 请求失败")
-                                                        )
-                                                        .when_some(self.error_log.as_ref(), |d, log| {
-                                                            d.child(
-                                                                div()
-                                                                    .text_xs()
-                                                                    .text_color(rgb(0x6c757d))
-                                                                    .child(format!("时间: {}", log.timestamp))
-                                                            )
-                                                        })
-                                                )
-                                                .when_some(self.error_log.as_ref(), |d, log| {
-                                                    d.child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap_2()
-                                                            .child(
-                                                                div()
-                                                                    .text_xs()
-                                                                    .text_color(rgb(0x58151c))
-                                                                    .child(
-                                                                        div()
-                                                                            .flex()
-                                                                            .flex_col()
-                                                                            .gap_1()
-                                                                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("📤 您的消息:"))
-                                                                            .child(div().child(format!("\"{}\"", log.user_message)))
-                                                                    )
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_xs()
-                                                                    .text_color(rgb(0x58151c))
-                                                                    .child(
-                                                                        div()
-                                                                            .flex()
-                                                                            .flex_col()
-                                                                            .gap_1()
-                                                                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("❌ 错误详情:"))
-                                                                            .child(div().child(log.error_message.clone()))
-                                                                    )
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_xs()
-                                                                    .text_color(rgb(0x6c757d))
-                                                                    .child(
-                                                                        div()
-                                                                            .flex()
-                                                                            .flex_row()
-                                                                            .gap_4()
-                                                                            .child(div().child(format!("🌐 API: {}", log.api_endpoint)))
-                                                                            .child(div().child(format!("🤖 模型: {}", log.model)))
-                                                                    )
-                                                            )
-                                                    )
-                                                })
-                                        )
-                                        .child(
-                                            // 关闭按钮
-                                            div()
-                                                .px_2()
-                                                .py_1()
-                                                .cursor_pointer()
-                                                .rounded(px(4.))
-                                                .hover(|style| style.bg(rgb(0xf5c2c7)))
-                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                    this.show_error_dialog = false;
-                                                    cx.notify();
-                                                }))
-                                                .child(
-                                                    div()
-                                                        .text_sm()
-                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                        .text_color(rgb(0x842029))
-                                                        .child("✕")
-                                                )
-                                        )
-                                )
-                        )
-                    })
-                    .child(
-                        // Messages Area - 使用flex-1占用剩余空间，添加垂直滚动
-                        div()
-                            .id("messages-scroll-area")
-                            .flex_1()
-                            .w_full()
-                            .overflow_y_scroll()  // 修改：使用overflow_y_scroll而不是overflow_hidden
-                            .p_6()
-                            .pb(px(96.)) // 预留底部空间，避免与输入区视觉重叠
-                            .when(!has_messages, |d| {
-                                d.flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .gap_4()
-                                            .child(
-                                                div()
-                                                    .text_2xl()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .text_color(rgb(0x495057))
-                                                    .child("🧪 滚动测试模式")
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(rgb(0x6c757d))
-                                                    .child("已加载测试消息 - 请尝试滚动")
-                                            )
-                                    )
-                            })
-                            .when(has_messages, |d| {
-                                d.child(render_message_list(
-                                    &messages,
-                                    &self.expanded_reasoning_messages,
-                                    window,
-                                    cx,
-                                    |this: &mut Self, timestamp, _, cx| {
-                                        // Toggle展开/收起状态
-                                        if this.expanded_reasoning_messages.contains(&timestamp) {
-                                            this.expanded_reasoning_messages.remove(&timestamp);
-                                        } else {
-                                            this.expanded_reasoning_messages.insert(timestamp);
-                                        }
-                                        cx.notify();
-                                    },
-                                ))
-                            })
-                            // ⚠️ 已删除额外的推理框 - 推理摘要现在只在消息列表中显示
-                    )
-                    .child(
-                        // 🎯 专业输入区域 - ChatGPT风格
-                        div()
-                            .w_full()
-                            .p_4()
-                            .border_t_1()
-                            .border_color(rgb(0xe5e5e5))
-                            .bg(rgb(0xffffff))  // 白色背景
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .gap_3()
-                                    .child(
-                                        // ✨ 使用 gpui-component 的专业 Input 组件
-                                        // 支持：中文输入、鼠标选择、复制粘贴、Undo/Redo、多行输入等功能
-                                        div()
-                                            .flex_1()
-                                            .max_h(px(200.))  // 最大高度
-                                            .bg(rgb(0xffffff))  // 白色背景
-                                            .rounded(px(12.))   // ChatGPT风格的圆角
-                                            .border_1()
-                                            .border_color(rgb(0xd1d5db))
-                                            .shadow_sm()
-                                            .px_3()  // 内边距
-                                            .py_2()
-                                            .child(
-                                                div()
-                                                    .bg(rgb(0xffffff))  // Input内部也设置白色背景
-                                                    .child(
-                                                        Input::new(&self.input_state)
-                                                            .cleanable()  // 显示清空按钮
-                                                    )
-                                            )
-                                    )
-                                    .child(
-                                        // Send button - ChatGPT 风格
-                                        {
-                                            let input_text = self.input_state.read(cx).value().to_string();
-                                            let is_empty = input_text.trim().is_empty();
-
-                                            div()
-                                                .size(px(40.))  // 圆形按钮
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .rounded(px(20.))  // 完全圆形
-                                                .when(is_empty || self.is_loading, |d| {
-                                                    d.bg(rgb(0xd1d5db))  // 禁用状态灰色
-                                                        .child(
-                                                            div()
-                                                                .text_sm()
-                                                                .text_color(rgb(0xffffff))
-                                                                .child("↑")
-                                                        )
-                                                })
-                                                .when(!is_empty && !self.is_loading, |d| {
-                                                    d.bg(rgb(0x10a37f))  // ChatGPT 绿色
-                                                        .cursor_pointer()
-                                                        .hover(|style| style.bg(rgb(0x0d8a6a)))
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                            this.send_message(cx);
-                                                        }))
-                                                        .child(
-                                                            div()
-                                                                .text_sm()
-                                                                .text_color(rgb(0xffffff))
-                                                                .font_weight(gpui::FontWeight::BOLD)
-                                                                .child("↑")
-                                                        )
-                                                })
-                                        }
-                                    )
-                            )
-                    )
+                    .text_sm()
+                    .text_color(rgb(0x666666))
+                    .child(placeholder_text),
             )
     }
 }

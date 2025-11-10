@@ -1,0 +1,165 @@
+# MCP 服务器配置示例
+#
+# 将此文件复制为 mcp_servers.toml 并根据需要修改
+# 或者设置环境变量 MCP_SERVERS_CONFIG 指向配置文件路径
+#
+# 支持的位置（按优先级）：
+# 1. 环境变量 MCP_SERVERS_CONFIG 指定的路径
+# 2. ./mcp_servers.toml（当前目录）
+# 3. ~/.config/gpui-test/mcp_servers.toml（用户配置目录）
+#
+# 连接类型说明：
+# - stdio: 通过进程 stdin/stdout 通信（适用于本地 MCP 服务器）
+# - http: 通过 HTTP/SSE 通信（适用于远程 MCP 服务器）
+
+#═══════════════════════════════════════════════════════════════════════════
+# HTTP 连接示例
+#═══════════════════════════════════════════════════════════════════════════
+
+# 基础 HTTP MCP 服务器示例
+[[servers]]
+name = "http-example"
+enabled = false  # 设置为 true 以启用
+
+# 连接类型：HTTP
+[servers.connection_type]
+type = "http"
+
+# HTTP 连接参数
+[servers.connection_params]
+url = "http://localhost:3000"  # MCP 服务器的基础 URL
+headers = {}  # 可选的 HTTP 头
+
+# 带认证的 HTTP MCP 服务器示例
+[[servers]]
+name = "http-with-auth"
+enabled = false
+
+[servers.connection_type]
+type = "http"
+
+[servers.connection_params]
+url = "https://api.example.com/mcp"
+
+# 自定义 HTTP 头（例如认证）
+[servers.connection_params.headers]
+Authorization = "Bearer your_token_here"
+X-API-Key = "your_api_key_here"
+Content-Type = "application/json"
+
+# 工具过滤
+[servers.tool_filter]
+allow = []  # 允许所有工具
+deny = []
+
+#═══════════════════════════════════════════════════════════════════════════
+# Stdio 连接示例
+#═══════════════════════════════════════════════════════════════════════════
+
+# 文件系统 MCP 服务器
+[[servers]]
+name = "filesystem"
+enabled = false  # 设置为 true 以启用
+
+# 连接类型（stdio 或 http）
+[servers.connection_type]
+type = "stdio"
+
+# stdio 连接参数
+[servers.connection_params]
+command = "npx"  # 或使用绝对路径
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"]
+env = {}  # 可选的环境变量
+
+# 工具过滤器（可选）
+[servers.tool_filter]
+allow = []  # 空数组表示允许所有工具
+deny = []   # 拒绝特定工具
+
+# Git MCP 服务器
+[[servers]]
+name = "git"
+enabled = false
+
+[servers.connection_type]
+type = "stdio"
+
+[servers.connection_params]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-git"]
+env = {}
+
+# GitHub MCP 服务器（需要 Personal Access Token）
+[[servers]]
+name = "github"
+enabled = false
+
+[servers.connection_type]
+type = "stdio"
+
+[servers.connection_params]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+
+# 通过环境变量传递 GitHub token
+[servers.connection_params.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "your_token_here"
+
+# 仅允许特定工具
+[servers.tool_filter]
+allow = ["search_repositories", "get_file_contents"]
+deny = []
+
+# Brave Search MCP 服务器
+[[servers]]
+name = "brave-search"
+enabled = false
+
+[servers.connection_type]
+type = "stdio"
+
+[servers.connection_params]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-brave-search"]
+
+[servers.connection_params.env]
+BRAVE_API_KEY = "your_brave_api_key_here"
+
+# PostgreSQL MCP 服务器
+[[servers]]
+name = "postgres"
+enabled = false
+
+[servers.connection_type]
+type = "stdio"
+
+[servers.connection_params]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
+env = {}
+
+# 拒绝危险操作
+[servers.tool_filter]
+allow = []
+deny = ["execute_query"]  # 仅允许只读查询
+
+# 自定义 MCP 服务器示例
+[[servers]]
+name = "my-custom-server"
+enabled = false
+
+[servers.connection_type]
+type = "stdio"
+
+[servers.connection_params]
+command = "/path/to/my/mcp-server"
+args = ["--port", "3000"]
+
+[servers.connection_params.env]
+API_KEY = "secret"
+DEBUG = "true"
+
+# 使用通配符过滤
+[servers.tool_filter]
+allow = ["read_*", "list_*"]  # 仅允许读取和列表操作
+deny = ["*_delete", "*_remove"]  # 拒绝删除操作

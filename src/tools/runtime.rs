@@ -3,8 +3,7 @@
 /// 负责工具的实际执行，包括审批机制、错误处理、超时控制
 ///
 /// 参考 codex-rs/core/src/tools/runtimes/
-
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,10 +32,7 @@ pub enum ExecutionResult {
         prompt: String,
     },
     /// 执行失败
-    Error {
-        call_id: String,
-        error: String,
-    },
+    Error { call_id: String, error: String },
 }
 
 /// 工具运行时配置
@@ -222,7 +218,11 @@ mod tests {
         }
 
         fn spec(&self) -> ToolSpec {
-            ToolSpec::function("mock".to_string(), "Mock tool".to_string(), serde_json::json!({}))
+            ToolSpec::function(
+                "mock".to_string(),
+                "Mock tool".to_string(),
+                serde_json::json!({}),
+            )
         }
 
         async fn execute(&self, _args: Value) -> Result<ToolOutput> {

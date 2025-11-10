@@ -9,10 +9,9 @@
 /// 3. 限制可执行的命令白名单
 ///
 /// 参考 codex-rs/core/src/tools/handlers/shell.rs
-
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Command;
 
 use crate::tools::spec::{Tool, ToolOutput, ToolSpec};

@@ -1,10 +1,9 @@
 /// HTTP/SSE 连接实现
 ///
 /// 通过 HTTP 请求与 MCP 服务器通信
-
 use super::connection::{ConnectionStatus, McpConnection};
 use super::types::{McpRequest, McpResponse};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -141,7 +140,11 @@ impl McpConnection for HttpConnection {
             }
             Err(e) => {
                 self.status = ConnectionStatus::Error;
-                Err(anyhow!("连接到 HTTP MCP 服务器 '{}' 失败: {}", self.server_name, e))
+                Err(anyhow!(
+                    "连接到 HTTP MCP 服务器 '{}' 失败: {}",
+                    self.server_name,
+                    e
+                ))
             }
         }
     }

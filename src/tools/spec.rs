@@ -1,7 +1,6 @@
 /// 工具规范定义
 ///
 /// 参考 codex-rs/core/src/tools/spec.rs
-
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -223,10 +222,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_to_response_input_item() {
-        let result = ToolResult::new(
-            "call_123".to_string(),
-            ToolOutput::text("Success"),
-        );
+        let result = ToolResult::new("call_123".to_string(), ToolOutput::text("Success"));
         let json = result.to_response_input_item();
         assert_eq!(json["type"], "function_call_output");
         assert_eq!(json["call_id"], "call_123");

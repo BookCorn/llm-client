@@ -1,10 +1,9 @@
 /// 会话历史管理
 ///
 /// 提供会话分叉、恢复和历史记录功能
-
 use super::conversation::Conversation;
 use super::message::Message;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,7 +45,11 @@ impl ConversationSnapshot {
     }
 
     /// 创建子快照（分叉时使用）
-    pub fn fork_from(parent: &ConversationSnapshot, messages: Vec<Message>, description: String) -> Self {
+    pub fn fork_from(
+        parent: &ConversationSnapshot,
+        messages: Vec<Message>,
+        description: String,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             conversation_id: parent.conversation_id,
@@ -231,7 +234,8 @@ impl ConversationHistory {
 
         // 保存快照
         self.snapshots.insert(parent_snapshot.id, parent_snapshot);
-        self.snapshots.insert(child_snapshot.id, child_snapshot.clone());
+        self.snapshots
+            .insert(child_snapshot.id, child_snapshot.clone());
 
         // 创建新会话
         let mut new_conversation = Conversation {
@@ -299,7 +303,10 @@ impl ConversationHistory {
             .ok_or_else(|| anyhow!("快照不存在"))?;
 
         // 从映射中移除
-        if let Some(snapshot_ids) = self.conversation_snapshots.get_mut(&snapshot.conversation_id) {
+        if let Some(snapshot_ids) = self
+            .conversation_snapshots
+            .get_mut(&snapshot.conversation_id)
+        {
             snapshot_ids.retain(|id| *id != snapshot_id);
         }
 

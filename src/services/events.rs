@@ -5,7 +5,6 @@
 /// 参考：
 /// - codex-rs/core/src/client_common.rs:197 (ResponseEvent)
 /// - codex-rs/protocol/src/models.rs (ResponseItem)
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -16,9 +15,7 @@ use serde_json::Value;
 #[derive(Clone, Debug)]
 pub enum ResponseEvent {
     /// response.created - 响应开始
-    Created {
-        response_id: String,
-    },
+    Created { response_id: String },
 
     /// response.output_item.done - 完整的响应项产出
     /// 这是"边产出边处理"的关键事件，允许即时消费工具调用
@@ -89,10 +86,7 @@ pub enum ResponseItem {
     },
 
     /// 本地 Shell 调用（特殊的工具类型）
-    LocalShellCall {
-        call_id: String,
-        command: String,
-    },
+    LocalShellCall { call_id: String, command: String },
 
     /// 自定义工具调用（扩展点）
     CustomToolCall {
@@ -150,9 +144,7 @@ pub enum FunctionCallOutputPayload {
     Text(String),
 
     /// 结构化输出（支持富媒体）
-    Structured {
-        content_items: Vec<ContentBlock>,
-    },
+    Structured { content_items: Vec<ContentBlock> },
 }
 
 /// Token 使用统计
@@ -220,37 +212,66 @@ impl EventParser {
         // 根据事件类型映射
         let event = match self.current_event_type.as_str() {
             "response.created" => {
-                let response_id = json["response"]["id"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let response_id = json["response"]["id"].as_str().unwrap_or("").to_string();
                 self.response_id = Some(response_id.clone());
                 Some(ResponseEvent::Created { response_id })
             }
 
             "response.output_item.done" => {
                 // 解析完整的 ResponseItem
-                let item: ResponseItem = serde_json::from_value(json["item"].clone())?;
-                Some(ResponseEvent::OutputItemDone(item))
+                match json.get("item") {
+                    Some(value) => match serde_json::from_value::<ResponseItem>(value.clone()) {
+                        Ok(item) => Some(ResponseEvent::OutputItemDone(item)),
+                        Err(err) => {
+                            println!("⚠️ 无法解析 output_item.done: {}", err);
+                            None
+                        }
+                    },
+                    None => {
+                        println!("⚠️ output_item.done 事件缺少 item 字段");
+                        None
+                    }
+                }
             }
 
-            "response.output_item.added" => {
-                let item: ResponseItem = serde_json::from_value(json["item"].clone())?;
-                Some(ResponseEvent::OutputItemAdded(item))
-            }
+            "response.output_item.added" => match json.get("item") {
+                Some(value) => match serde_json::from_value::<ResponseItem>(value.clone()) {
+                    Ok(item) => Some(ResponseEvent::OutputItemAdded(item)),
+                    Err(err) => {
+                        println!("⚠️ 无法解析 output_item.added: {}", err);
+                        None
+                    }
+                },
+                None => {
+                    println!("⚠️ output_item.added 事件缺少 item 字段");
+                    None
+                }
+            },
 
             "response.output_text.delta" => {
-                let delta = json["delta"].as_str().unwrap_or("").to_string();
+                let delta = json
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 Some(ResponseEvent::OutputTextDelta(delta))
             }
 
             "response.reasoning_summary_text.delta" => {
-                let delta = json["delta"].as_str().unwrap_or("").to_string();
+                let delta = json
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 Some(ResponseEvent::ReasoningSummaryDelta(delta))
             }
 
             "response.reasoning_text.delta" => {
-                let delta = json["delta"].as_str().unwrap_or("").to_string();
+                let delta = json
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 Some(ResponseEvent::ReasoningContentDelta(delta))
             }
 
@@ -260,21 +281,27 @@ impl EventParser {
 
             "response.completed" => {
                 self.saw_completed = true;
-                let response_id = json["response"]["id"]
-                    .as_str()
+                let response_id = nested_str(&json, &["response", "id"])
                     .unwrap_or("")
                     .to_string();
 
                 // 解析 token 使用情况
-                let token_usage = if let Some(usage) = json["response"]["usage"].as_object() {
-                    Some(TokenUsage {
-                        input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
-                        output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
-                        reasoning_tokens: usage["reasoning_tokens"].as_u64().unwrap_or(0),
-                    })
-                } else {
-                    None
-                };
+                let token_usage = nested(&json, &["response", "usage"])
+                    .and_then(|usage| usage.as_object())
+                    .map(|usage| TokenUsage {
+                        input_tokens: usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        output_tokens: usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        reasoning_tokens: usage
+                            .get("reasoning_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                    });
 
                 Some(ResponseEvent::Completed {
                     response_id,
@@ -283,20 +310,22 @@ impl EventParser {
             }
 
             "response.failed" => {
-                let error = json["error"]["message"]
-                    .as_str()
+                let error = nested_str(&json, &["error", "message"])
                     .unwrap_or("Unknown error")
                     .to_string();
 
                 // 尝试解析重试建议
-                let retry_after = json["error"]["retry_after"].as_u64();
+                let retry_after = nested(&json, &["error", "retry_after"]).and_then(|v| v.as_u64());
 
                 Some(ResponseEvent::Failed { error, retry_after })
             }
 
             _ => {
                 // 未知事件类型 - 仅记录日志
-                println!("ℹ️ 未知事件类型: {} | 数据: {}", self.current_event_type, data);
+                println!(
+                    "ℹ️ 未知事件类型: {} | 数据: {}",
+                    self.current_event_type, data
+                );
                 None
             }
         };
@@ -357,12 +386,7 @@ pub fn parse_rate_limit_snapshot(
             .ok()?
             .parse()
             .ok()?,
-        reset_at: parse_reset_time(
-            headers
-                .get("x-ratelimit-reset-requests")?
-                .to_str()
-                .ok()?,
-        )?,
+        reset_at: parse_reset_time(headers.get("x-ratelimit-reset-requests")?.to_str().ok()?)?,
     };
 
     let tokens = WindowInfo {
@@ -392,6 +416,18 @@ fn parse_reset_time(reset_str: &str) -> Option<std::time::SystemTime> {
         // TODO: 添加 ISO 8601 解析
         None
     }
+}
+
+fn nested<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn nested_str<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    nested(value, path)?.as_str()
 }
 
 #[cfg(test)]
@@ -452,9 +488,11 @@ mod tests {
         // 未看到 completed 事件
         let result = parser.finalize();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("before response.completed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("before response.completed")
+        );
     }
 }

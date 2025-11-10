@@ -5,7 +5,6 @@
 /// - 动态工具发现
 /// - 工具限定名机制
 /// - 配置管理
-
 pub mod config;
 pub mod connection;
 pub mod http;
@@ -15,7 +14,7 @@ pub mod tool_adapter;
 pub mod types;
 
 pub use config::McpConfig;
-pub use connection::{McpConnection, ConnectionStatus};
+pub use connection::{ConnectionStatus, McpConnection};
 pub use http::HttpConnection;
 pub use manager::McpConnectionManager;
 pub use stdio::StdioConnection;

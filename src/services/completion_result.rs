@@ -1,7 +1,6 @@
 /// 完成结果类型
 ///
 /// 扩展了简单的字符串返回，支持工具调用信息
-
 use crate::tools::spec::ToolInvocation;
 
 /// Completion 结果

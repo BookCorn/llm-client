@@ -7,7 +7,6 @@
 /// - codex-rs/core/src/tools/spec.rs (工具定义)
 /// - codex-rs/core/src/tools/router.rs (工具路由)
 /// - codex-rs/core/src/tools/runtimes/ (工具执行)
-
 pub mod registry;
 pub mod router;
 pub mod runtime;
@@ -18,5 +17,5 @@ pub mod builtin;
 
 pub use registry::ToolRegistry;
 pub use router::ToolRouter;
-pub use runtime::{ToolRuntime, ApprovalPolicy, ExecutionResult, RuntimeConfig};
-pub use spec::{Tool, ToolSpec, ToolOutput};
+pub use runtime::{ApprovalPolicy, ExecutionResult, RuntimeConfig, ToolRuntime};
+pub use spec::{Tool, ToolOutput, ToolSpec};

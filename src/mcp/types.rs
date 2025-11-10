@@ -1,7 +1,6 @@
 /// MCP 类型定义
 ///
 /// 定义 MCP 协议中使用的核心数据结构
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -88,7 +87,11 @@ impl ToolFilter {
     /// 检查工具是否被允许
     pub fn is_allowed(&self, tool_name: &str) -> bool {
         // 如果在拒绝列表中，直接拒绝
-        if self.deny.iter().any(|pattern| Self::matches(tool_name, pattern)) {
+        if self
+            .deny
+            .iter()
+            .any(|pattern| Self::matches(tool_name, pattern))
+        {
             return false;
         }
 
@@ -98,7 +101,9 @@ impl ToolFilter {
         }
 
         // 检查是否在允许列表中
-        self.allow.iter().any(|pattern| Self::matches(tool_name, pattern))
+        self.allow
+            .iter()
+            .any(|pattern| Self::matches(tool_name, pattern))
     }
 
     /// 简单的模式匹配（支持 * 通配符）

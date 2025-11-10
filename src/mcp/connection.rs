@@ -1,7 +1,6 @@
 /// MCP 连接接口
 ///
 /// 定义了与 MCP 服务器通信的标准接口
-
 use super::types::{McpRequest, McpResponse, McpToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -51,15 +50,16 @@ pub trait McpConnection: Send + Sync {
             return Err(anyhow::anyhow!("MCP error: {}", error.message));
         }
 
-        let result = response.result.ok_or_else(|| {
-            anyhow::anyhow!("No result in tools/list response")
-        })?;
+        let result = response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in tools/list response"))?;
 
         // 解析工具列表
         let tools: Vec<McpToolDefinition> = serde_json::from_value(
-            result.get("tools")
+            result
+                .get("tools")
                 .ok_or_else(|| anyhow::anyhow!("No 'tools' field in response"))?
-                .clone()
+                .clone(),
         )?;
 
         Ok(tools)
@@ -75,12 +75,16 @@ pub trait McpConnection: Send + Sync {
         let response = self.send_request(request).await?;
 
         if let Some(error) = response.error {
-            return Err(anyhow::anyhow!("MCP error calling {}: {}", name, error.message));
+            return Err(anyhow::anyhow!(
+                "MCP error calling {}: {}",
+                name,
+                error.message
+            ));
         }
 
-        response.result.ok_or_else(|| {
-            anyhow::anyhow!("No result in tools/call response")
-        })
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in tools/call response"))
     }
 
     /// 获取下一个请求 ID
@@ -103,7 +107,10 @@ mod tests {
     // 测试 ConnectionStatus
     #[test]
     fn test_connection_status() {
-        assert_eq!(ConnectionStatus::Disconnected, ConnectionStatus::Disconnected);
+        assert_eq!(
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Disconnected
+        );
         assert_ne!(ConnectionStatus::Connected, ConnectionStatus::Disconnected);
     }
 }

@@ -1,14 +1,13 @@
 /// stdio 进程连接实现
 ///
 /// 通过 stdin/stdout 与 MCP 服务器进程通信
-
 use super::connection::{ConnectionStatus, McpConnection};
 use super::types::{McpRequest, McpResponse};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -77,16 +76,20 @@ impl StdioConnection {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::null()); // TODO: 捕获 stderr 用于日志
 
-        let mut child = cmd.spawn().map_err(|e| {
-            anyhow!("Failed to spawn MCP server '{}': {}", self.server_name, e)
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("Failed to spawn MCP server '{}': {}", self.server_name, e))?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            anyhow!("Failed to open stdin for MCP server '{}'", self.server_name)
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open stdin for MCP server '{}'", self.server_name))?;
 
         let stdout = child.stdout.take().ok_or_else(|| {
-            anyhow!("Failed to open stdout for MCP server '{}'", self.server_name)
+            anyhow!(
+                "Failed to open stdout for MCP server '{}'",
+                self.server_name
+            )
         })?;
 
         Ok(StdioProcess {
@@ -134,9 +137,10 @@ impl McpConnection for StdioConnection {
     }
 
     async fn send_request(&mut self, request: McpRequest) -> Result<McpResponse> {
-        let process = self.process.as_ref().ok_or_else(|| {
-            anyhow!("Not connected to MCP server '{}'", self.server_name)
-        })?;
+        let process = self
+            .process
+            .as_ref()
+            .ok_or_else(|| anyhow!("Not connected to MCP server '{}'", self.server_name))?;
 
         // 序列化请求
         let request_json = serde_json::to_string(&request)?;

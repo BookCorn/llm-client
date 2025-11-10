@@ -1,7 +1,6 @@
 /// 应用配置
 ///
 /// 包含所有应用级别的配置
-
 use super::provider_config::{Provider, ProviderType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -222,7 +221,10 @@ impl Default for StorageConfig {
 impl AppConfig {
     /// 获取默认 provider
     pub fn default_provider(&self) -> Option<&Provider> {
-        self.providers.iter().find(|p| p.enabled).or_else(|| self.providers.first())
+        self.providers
+            .iter()
+            .find(|p| p.enabled)
+            .or_else(|| self.providers.first())
     }
 
     /// 根据名称获取 provider
@@ -281,13 +283,11 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             app: AppInfo::default(),
-            providers: vec![
-                Provider::openai(
-                    "default".to_string(),
-                    "your-api-key-here".to_string(),
-                    "gpt-4".to_string(),
-                ),
-            ],
+            providers: vec![Provider::openai(
+                "default".to_string(),
+                "your-api-key-here".to_string(),
+                "gpt-4".to_string(),
+            )],
             mcp: McpConfig::default(),
             conversation: ConversationConfig::default(),
             ui: UiConfig::default(),

@@ -1,14 +1,13 @@
 /// 统一配置管理
 ///
 /// 使用 TOML 文件替代环境变量，提供集中的配置管理
-
 pub mod app_config;
 pub mod provider_config;
 
 pub use app_config::AppConfig;
 pub use provider_config::{Provider, ProviderConfig, ProviderType};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -26,8 +25,7 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path.as_ref())
             .map_err(|e| anyhow!("无法读取配置文件: {}", e))?;
 
-        toml::from_str(&content)
-            .map_err(|e| anyhow!("无法解析配置文件: {}", e))
+        toml::from_str(&content).map_err(|e| anyhow!("无法解析配置文件: {}", e))
     }
 
     /// 尝试从默认位置加载配置
@@ -52,11 +50,10 @@ impl ConfigLoader {
 
     /// 保存配置到文件
     pub fn save_to_file<P: AsRef<Path>>(config: &AppConfig, path: P) -> Result<()> {
-        let content = toml::to_string_pretty(config)
-            .map_err(|e| anyhow!("无法序列化配置: {}", e))?;
+        let content =
+            toml::to_string_pretty(config).map_err(|e| anyhow!("无法序列化配置: {}", e))?;
 
-        std::fs::write(path.as_ref(), content)
-            .map_err(|e| anyhow!("无法写入配置文件: {}", e))?;
+        std::fs::write(path.as_ref(), content).map_err(|e| anyhow!("无法写入配置文件: {}", e))?;
 
         Ok(())
     }
@@ -68,11 +65,9 @@ impl ConfigLoader {
 
     /// 确保配置目录存在
     pub fn ensure_config_dir() -> Result<PathBuf> {
-        let config_dir = Self::default_config_dir()
-            .ok_or_else(|| anyhow!("无法确定配置目录"))?;
+        let config_dir = Self::default_config_dir().ok_or_else(|| anyhow!("无法确定配置目录"))?;
 
-        std::fs::create_dir_all(&config_dir)
-            .map_err(|e| anyhow!("无法创建配置目录: {}", e))?;
+        std::fs::create_dir_all(&config_dir).map_err(|e| anyhow!("无法创建配置目录: {}", e))?;
 
         Ok(config_dir)
     }

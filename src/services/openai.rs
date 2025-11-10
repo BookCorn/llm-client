@@ -1,25 +1,25 @@
 use anyhow::Result;
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
     },
-    Client,
 };
 use futures::StreamExt;
-use reqwest::{header::HeaderMap, StatusCode};
+use reqwest::{StatusCode, header::HeaderMap};
 use serde_json::json;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 
-use crate::models::Message;
 use super::events::{EventParser, RateLimitSnapshot, ResponseEvent};
-use crate::tools::{ToolRegistry, ToolRuntime, RuntimeConfig, ApprovalPolicy, ToolRouter};
+use crate::models::Message;
 use crate::tools::spec::ToolInvocation;
+use crate::tools::{ApprovalPolicy, RuntimeConfig, ToolRegistry, ToolRouter, ToolRuntime};
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful AI assistant. Always respond with well-structured Markdown that uses descriptive headings (#, ##, ###), bullet or numbered lists, bold and italic emphasis, tables when helpful, and fenced code blocks for code examples. Maintain the user's language unless instructed otherwise.";
 
@@ -29,13 +29,13 @@ pub struct OpenAIServiceConfig {
     pub api_key: String,
     pub api_base: Option<String>,
     pub model: String,
-    pub use_responses_api: bool,  // 是否使用 Responses API（第三方服务可能不支持）
+    pub use_responses_api: bool, // 是否使用 Responses API（第三方服务可能不支持）
     // Responses API 推理选项
-    pub reasoning_effort: String,   // minimal|low|medium|high（默认：medium）
-    pub reasoning_summary: String,  // auto|on|off（默认：auto）
+    pub reasoning_effort: String, // minimal|low|medium|high（默认：medium）
+    pub reasoning_summary: String, // auto|on|off（默认：auto）
     // 工具配置
-    pub enable_tools: bool,         // 是否启用工具调用（默认：false）
-    pub tool_approval_policy: ApprovalPolicy,  // 工具审批策略
+    pub enable_tools: bool, // 是否启用工具调用（默认：false）
+    pub tool_approval_policy: ApprovalPolicy, // 工具审批策略
     // 可靠性配置
     pub retry_policy: RetryPolicyConfig,
     pub timeout_config: TimeoutConfig,
@@ -100,7 +100,7 @@ impl OpenAIServiceConfig {
             Some("auto") => ApprovalPolicy::AutoApprove,
             Some("safe") => ApprovalPolicy::AutoApproveSafe,
             Some("require") => ApprovalPolicy::RequireApproval,
-            _ => ApprovalPolicy::AutoApproveSafe,  // 默认：安全工具自动批准
+            _ => ApprovalPolicy::AutoApproveSafe, // 默认：安全工具自动批准
         };
 
         let retry_policy = RetryPolicyConfig {
@@ -111,8 +111,14 @@ impl OpenAIServiceConfig {
         };
 
         let timeout_config = TimeoutConfig {
-            request_timeout: Duration::from_millis(read_env_u64("OPENAI_REQUEST_TIMEOUT_MS", 15_000)),
-            stream_idle_timeout: Duration::from_millis(read_env_u64("OPENAI_STREAM_IDLE_TIMEOUT_MS", 20_000)),
+            request_timeout: Duration::from_millis(read_env_u64(
+                "OPENAI_REQUEST_TIMEOUT_MS",
+                15_000,
+            )),
+            stream_idle_timeout: Duration::from_millis(read_env_u64(
+                "OPENAI_STREAM_IDLE_TIMEOUT_MS",
+                20_000,
+            )),
         };
 
         Ok(Self {
@@ -120,8 +126,10 @@ impl OpenAIServiceConfig {
             api_base,
             model,
             use_responses_api,
-            reasoning_effort: std::env::var("OPENAI_REASONING_EFFORT").unwrap_or_else(|_| "medium".to_string()),
-            reasoning_summary: std::env::var("OPENAI_REASONING_SUMMARY").unwrap_or_else(|_| "auto".to_string()),
+            reasoning_effort: std::env::var("OPENAI_REASONING_EFFORT")
+                .unwrap_or_else(|_| "medium".to_string()),
+            reasoning_summary: std::env::var("OPENAI_REASONING_SUMMARY")
+                .unwrap_or_else(|_| "auto".to_string()),
             enable_tools,
             tool_approval_policy,
             retry_policy,
@@ -137,7 +145,7 @@ impl OpenAIServiceConfig {
             api_key,
             api_base,
             model,
-            use_responses_api: true,  // 默认使用 Responses API
+            use_responses_api: true, // 默认使用 Responses API
             reasoning_effort: "medium".to_string(),
             reasoning_summary: "auto".to_string(),
             enable_tools: false,
@@ -268,7 +276,7 @@ impl OpenAIService {
         let enable_mcp = std::env::var("ENABLE_MCP")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
-            .unwrap_or(true);  // 默认启用
+            .unwrap_or(true); // 默认启用
 
         if !enable_mcp {
             println!("ℹ️  MCP 集成已禁用（ENABLE_MCP=false）");
@@ -338,7 +346,10 @@ impl OpenAIService {
             timeout_ms: 60000,
             sandboxed: false,
         };
-        self.tool_runtime = Arc::new(ToolRuntime::new(self.tool_registry.clone(), tool_runtime_config));
+        self.tool_runtime = Arc::new(ToolRuntime::new(
+            self.tool_registry.clone(),
+            tool_runtime_config,
+        ));
 
         // 保存 manager 用于后续管理
         self.mcp_manager = Some(Arc::new(tokio::sync::Mutex::new(manager)));
@@ -353,7 +364,9 @@ impl OpenAIService {
     }
 
     /// 获取 MCP 连接状态
-    pub async fn get_mcp_status(&self) -> Result<std::collections::HashMap<String, crate::mcp::ConnectionStatus>> {
+    pub async fn get_mcp_status(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::mcp::ConnectionStatus>> {
         if let Some(manager) = &self.mcp_manager {
             let mgr = manager.lock().await;
             Ok(mgr.get_status().await)
@@ -368,7 +381,9 @@ impl OpenAIService {
             let mut mgr = manager.lock().await;
 
             // 找到对应的配置
-            let config = mgr.configs.iter()
+            let config = mgr
+                .configs
+                .iter()
                 .find(|c| c.name == server_name)
                 .ok_or_else(|| anyhow::anyhow!("未找到服务器配置: {}", server_name))?
                 .clone();
@@ -388,7 +403,8 @@ impl OpenAIService {
                 conn.connect().await?;
             }
 
-            mgr.connections.insert(server_name.to_string(), connection_arc);
+            mgr.connections
+                .insert(server_name.to_string(), connection_arc);
             println!("✅ MCP 服务器 {} 重连成功", server_name);
 
             Ok(())
@@ -472,7 +488,11 @@ impl OpenAIService {
     }
 
     #[allow(dead_code)]
-    pub async fn get_streaming_completion<F>(&self, messages: &[Message], mut on_chunk: F) -> Result<(String, Option<String>)>
+    pub async fn get_streaming_completion<F>(
+        &self,
+        messages: &[Message],
+        mut on_chunk: F,
+    ) -> Result<(String, Option<String>)>
     where
         F: FnMut(String) + Send,
     {
@@ -565,12 +585,13 @@ impl OpenAIService {
 
         if self.config.use_responses_api {
             println!("ℹ️ 使用 Responses API（支持 reasoning summary + 工具调用）");
-            self
-                .call_responses_api(messages, &mut on_chunk_mut, &mut on_reasoning_mut)
+            self.call_responses_api(messages, &mut on_chunk_mut, &mut on_reasoning_mut)
                 .await
         } else {
             println!("ℹ️ 使用 Chat Completions API（传统模式）");
-            let (content, reasoning) = self.call_chat_completions_api(messages, &mut on_chunk_mut).await?;
+            let (content, reasoning) = self
+                .call_chat_completions_api(messages, &mut on_chunk_mut)
+                .await?;
             Ok(super::CompletionResult::simple(content, reasoning))
         }
     }
@@ -613,7 +634,8 @@ impl OpenAIService {
             })
             .await?;
 
-        self.rate_limit_tracker.update_from_headers(response.headers());
+        self.rate_limit_tracker
+            .update_from_headers(response.headers());
 
         let mut full_response = String::new();
         let mut stream = response.bytes_stream();
@@ -673,7 +695,10 @@ impl OpenAIService {
             }
         }
 
-        println!("✅ Chat Completions API 完成 - 输出: {} 字符", full_response.len());
+        println!(
+            "✅ Chat Completions API 完成 - 输出: {} 字符",
+            full_response.len()
+        );
         Ok((full_response, None))
     }
 
@@ -720,10 +745,8 @@ impl OpenAIService {
             if self.config.enable_tools {
                 let tool_specs = self.tool_registry.specs();
                 if !tool_specs.is_empty() {
-                    let tools_json: Vec<serde_json::Value> = tool_specs
-                        .iter()
-                        .map(|spec| spec.to_json())
-                        .collect();
+                    let tools_json: Vec<serde_json::Value> =
+                        tool_specs.iter().map(|spec| spec.to_json()).collect();
 
                     request_body["tools"] = json!(tools_json);
                     request_body["tool_choice"] = json!("auto");
@@ -738,7 +761,11 @@ impl OpenAIService {
                 }
             }
 
-            let api_base = self.config.api_base.as_deref().unwrap_or("https://api.openai.com/v1");
+            let api_base = self
+                .config
+                .api_base
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1");
             let url = format!("{}/responses", api_base);
 
             println!("🔗 使用 Responses API 调用: {}", url);
@@ -755,7 +782,8 @@ impl OpenAIService {
                 })
                 .await?;
 
-            self.rate_limit_tracker.update_from_headers(response.headers());
+            self.rate_limit_tracker
+                .update_from_headers(response.headers());
 
             let mut full_response = String::new();
             let mut reasoning_summary = String::new();
@@ -822,7 +850,8 @@ impl OpenAIService {
                                 }
                                 ResponseEvent::ReasoningSummaryPartAdded => {}
                                 ResponseEvent::OutputItemDone(item) => {
-                                    if let Ok(Some(invocation)) = ToolRouter::build_tool_invocation(item)
+                                    if let Ok(Some(invocation)) =
+                                        ToolRouter::build_tool_invocation(item)
                                     {
                                         println!(
                                             "🔧 检测到工具调用: {} (call_id: {})",
@@ -870,11 +899,8 @@ impl OpenAIService {
                 Some(reasoning_summary)
             };
 
-            let completion = super::CompletionResult::new(
-                full_response,
-                reasoning_opt,
-                tool_invocations,
-            );
+            let completion =
+                super::CompletionResult::new(full_response, reasoning_opt, tool_invocations);
 
             println!(
                 "✅ Responses API 完成 - 输出: {} 字符, 推理摘要: {:?}, 工具调用: {}",
@@ -964,13 +990,11 @@ impl OpenAIService {
                 );
             } else {
                 // For assistant messages, we need to use a different type
-                openai_messages.push(
-                    ChatCompletionRequestMessage::Assistant(
-                        async_openai::types::ChatCompletionRequestAssistantMessageArgs::default()
-                            .content(msg.content.clone())
-                            .build()?
-                    )
-                );
+                openai_messages.push(ChatCompletionRequestMessage::Assistant(
+                    async_openai::types::ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(msg.content.clone())
+                        .build()?,
+                ));
             }
         }
 
@@ -998,10 +1022,7 @@ impl OpenAIService {
                         .unwrap_or_else(|| self.config.retry_policy.delay_for_attempt(attempt));
                     println!(
                         "🔁 [{}] 第{}次尝试失败: {}。将在 {:?} 后重试",
-                        label,
-                        attempt,
-                        err,
-                        delay
+                        label, attempt, err, delay
                     );
                     sleep(delay).await;
                 }
@@ -1023,7 +1044,8 @@ impl OpenAIService {
             .json(&*body)
             .send();
 
-        let response = match timeout(self.config.timeout_config.request_timeout, send_future).await {
+        let response = match timeout(self.config.timeout_config.request_timeout, send_future).await
+        {
             Ok(Ok(resp)) => resp,
             Ok(Err(err)) => {
                 if err.is_timeout() || err.is_connect() || err.is_request() {

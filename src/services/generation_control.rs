@@ -1,7 +1,6 @@
 /// 文本生成控制
 ///
 /// 提供对模型文本生成过程的精细控制，支持 GPT-5 等高级模型的参数
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -182,19 +181,13 @@ impl GenerationParams {
 
         if let Some(freq) = self.frequency_penalty {
             if !(-2.0..=2.0).contains(&freq) {
-                return Err(format!(
-                    "频率惩罚必须在 -2.0-2.0 之间，当前: {}",
-                    freq
-                ));
+                return Err(format!("频率惩罚必须在 -2.0-2.0 之间，当前: {}", freq));
             }
         }
 
         if let Some(pres) = self.presence_penalty {
             if !(-2.0..=2.0).contains(&pres) {
-                return Err(format!(
-                    "存在惩罚必须在 -2.0-2.0 之间，当前: {}",
-                    pres
-                ));
+                return Err(format!("存在惩罚必须在 -2.0-2.0 之间，当前: {}", pres));
             }
         }
 
@@ -462,8 +455,8 @@ mod tests {
 
     #[test]
     fn test_generation_control() {
-        let control = GenerationControl::new(GenerationPreset::Precise)
-            .with_params(GenerationParams {
+        let control =
+            GenerationControl::new(GenerationPreset::Precise).with_params(GenerationParams {
                 temperature: Some(0.5),
                 ..Default::default()
             });

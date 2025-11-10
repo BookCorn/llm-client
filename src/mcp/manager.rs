@@ -1,13 +1,12 @@
 /// MCP 连接管理器
 ///
 /// 管理多个 MCP 服务器连接，自动发现和注册工具
-
 use super::connection::{ConnectionStatus, McpConnection};
 use super::stdio::StdioConnection;
 use super::tool_adapter::McpToolAdapter;
 use super::types::{ConnectionParams, ConnectionType, McpServerConfig};
 use crate::tools::registry::ToolRegistry;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -77,16 +76,16 @@ impl McpConnectionManager {
             conn.connect().await?;
         }
 
-        self.connections.insert(
-            config.name.clone(),
-            connection_arc,
-        );
+        self.connections.insert(config.name.clone(), connection_arc);
 
         Ok(())
     }
 
     /// 根据配置创建连接
-    pub(crate) fn create_connection(&self, config: &McpServerConfig) -> Result<Arc<Mutex<dyn McpConnection>>> {
+    pub(crate) fn create_connection(
+        &self,
+        config: &McpServerConfig,
+    ) -> Result<Arc<Mutex<dyn McpConnection>>> {
         match &config.connection_type {
             ConnectionType::Stdio => {
                 if let ConnectionParams::Stdio { command, args, env } = &config.connection_params {
@@ -117,16 +116,16 @@ impl McpConnectionManager {
     }
 
     /// 发现并注册所有工具
-    pub async fn discover_and_register_tools(
-        &mut self,
-        registry: &mut ToolRegistry,
-    ) -> Result<()> {
+    pub async fn discover_and_register_tools(&mut self, registry: &mut ToolRegistry) -> Result<()> {
         println!("🔍 开始发现 MCP 工具...");
 
         let mut total_tools = 0;
 
         for (server_name, connection) in &self.connections {
-            match self.discover_tools_from_server(server_name, connection.clone(), registry).await {
+            match self
+                .discover_tools_from_server(server_name, connection.clone(), registry)
+                .await
+            {
                 Ok(count) => {
                     println!("✅ 从 {} 发现 {} 个工具", server_name, count);
                     total_tools += count;
@@ -149,7 +148,9 @@ impl McpConnectionManager {
         registry: &mut ToolRegistry,
     ) -> Result<usize> {
         // 获取服务器配置
-        let config = self.configs.iter()
+        let config = self
+            .configs
+            .iter()
             .find(|c| c.name == server_name)
             .ok_or_else(|| anyhow!("Server config not found: {}", server_name))?;
 
@@ -181,11 +182,7 @@ impl McpConnectionManager {
                     registered_count += 1;
                 }
                 Err(e) => {
-                    println!(
-                        "⚠️  注册工具 {} 失败: {}",
-                        mcp_tool.name,
-                        e
-                    );
+                    println!("⚠️  注册工具 {} 失败: {}", mcp_tool.name, e);
                 }
             }
         }

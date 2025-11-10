@@ -1,7 +1,6 @@
 /// Provider 配置
 ///
 /// 支持多个 AI Provider（OpenAI, Azure OpenAI, Anthropic 等）
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;

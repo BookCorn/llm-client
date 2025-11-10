@@ -1,7 +1,6 @@
 /// MCP 工具适配器
 ///
 /// 将 MCP 工具定义转换为我们的 ToolSpec 格式，并创建可执行的 Tool 实例
-
 use super::connection::McpConnection;
 use super::types::McpToolDefinition;
 use crate::tools::spec::{Tool, ToolOutput, ToolSpec};
@@ -18,10 +17,7 @@ pub struct McpToolAdapter;
 
 impl McpToolAdapter {
     /// 将 MCP 工具定义转换为 ToolSpec
-    pub fn to_tool_spec(
-        server_name: &str,
-        mcp_tool: &McpToolDefinition,
-    ) -> ToolSpec {
+    pub fn to_tool_spec(server_name: &str, mcp_tool: &McpToolDefinition) -> ToolSpec {
         // 生成限定名: mcp__{server}__{tool}
         let qualified_name = Self::qualified_name(server_name, &mcp_tool.name);
 
@@ -134,9 +130,9 @@ impl Tool for McpTool {
 impl McpTool {
     /// 从 MCP content 数组中提取文本
     fn extract_text_from_content(content: &Value) -> Result<String> {
-        let content_array = content.as_array().ok_or_else(|| {
-            anyhow::anyhow!("Expected 'content' to be an array")
-        })?;
+        let content_array = content
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Expected 'content' to be an array"))?;
 
         let mut text_parts = Vec::new();
 
